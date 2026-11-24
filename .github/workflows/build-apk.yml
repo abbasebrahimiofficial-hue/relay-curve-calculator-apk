@@ -14,317 +14,473 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Unpack Android project and generate electrical app icons
+      - name: Generate Android project files
+        run: |
+          mkdir -p app/src/main/java/com/example/relaycurve
+          mkdir -p app/src/main/res/mipmap-anydpi-v26
+          mkdir -p app/src/main/res/values
+
+          cat << 'EOF_SETTINGS' > settings.gradle.kts
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories { google(); mavenCentral() }
+          }
+          rootProject.name = "RelayCurveCalculator"
+          include(":app")
+          EOF_SETTINGS
+
+          cat << 'EOF_BUILD' > build.gradle.kts
+          plugins {
+              id("com.android.application") version "8.7.3" apply false
+              id("org.jetbrains.kotlin.android") version "2.0.21" apply false
+              id("org.jetbrains.kotlin.plugin.compose") version "2.0.21" apply false
+          }
+          EOF_BUILD
+
+          cat << 'EOF_PROPS' > gradle.properties
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          kotlin.code.style=official
+          EOF_PROPS
+
+          cat << 'EOF_APPBUILD' > app/build.gradle.kts
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+              id("org.jetbrains.kotlin.plugin.compose")
+          }
+          android {
+              namespace = "com.example.relaycurve"
+              compileSdk = 35
+              defaultConfig {
+                  applicationId = "com.example.relaycurve"
+                  minSdk = 26
+                  targetSdk = 35
+                  versionCode = 1
+                  versionName = "0.1.0"
+              }
+              buildFeatures { compose = true }
+          }
+          dependencies {
+              implementation(platform("androidx.compose:compose-bom:2024.12.01"))
+              implementation("androidx.activity:activity-compose:1.10.0")
+              implementation("androidx.compose.ui:ui")
+              implementation("androidx.compose.ui:ui-tooling-preview")
+              implementation("androidx.compose.material3:material3")
+              implementation("androidx.compose.foundation:foundation")
+              implementation("androidx.compose.ui:ui-graphics")
+              debugImplementation("androidx.compose.ui:ui-tooling")
+          }
+          EOF_APPBUILD
+
+          cat << 'EOF_MANIFEST' > app/src/main/AndroidManifest.xml
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <application
+                  android:theme="@android:style/Theme.Material.Light.NoActionBar"
+                  android:label="Relay Curve Calculator"
+                  android:icon="@mipmap/ic_launcher"
+                  android:roundIcon="@mipmap/ic_launcher_round"
+                  android:allowBackup="false">
+                  <activity android:name=".MainActivity" android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN"/>
+                          <category android:name="android.intent.category.LAUNCHER"/>
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF_MANIFEST
+
+          cat << 'EOF_ADAPTIVE' > app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+              <background android:drawable="@color/ic_launcher_background"/>
+              <foreground android:drawable="@drawable/ic_launcher_foreground"/>
+          </adaptive-icon>
+          EOF_ADAPTIVE
+          cp app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml
+
+          cat << 'EOF_BG' > app/src/main/res/values/ic_launcher_background.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <color name="ic_launcher_background">#020A24</color>
+          </resources>
+          EOF_BG
+
+          cat << 'EOF_MAIN' > app/src/main/java/com/example/relaycurve/MainActivity.kt
+          package com.example.relaycurve
+
+          import android.os.Bundle
+          import androidx.activity.ComponentActivity
+          import androidx.activity.compose.setContent
+          import androidx.compose.foundation.Canvas
+          import androidx.compose.foundation.background
+          import androidx.compose.foundation.layout.*
+          import androidx.compose.foundation.rememberScrollState
+          import androidx.compose.foundation.shape.RoundedCornerShape
+          import androidx.compose.foundation.text.KeyboardOptions
+          import androidx.compose.foundation.verticalScroll
+          import androidx.compose.material3.*
+          import androidx.compose.runtime.*
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.platform.LocalLayoutDirection
+          import androidx.compose.ui.unit.LayoutDirection
+          import androidx.compose.ui.geometry.Offset
+          import androidx.compose.ui.graphics.Color
+          import androidx.compose.ui.text.font.FontWeight
+          import androidx.compose.ui.text.input.KeyboardType
+          import androidx.compose.ui.unit.dp
+          import androidx.compose.ui.unit.sp
+          import kotlin.math.*
+
+          private enum class Standard(val title: String) {
+              IEC("IEC"), ANSI("IEEE / ANSI"), MANUFACTURER("Manufacturer Specific Curves")
+          }
+          private enum class Curve(val code: String, val title: String) {
+              IEC_NI("NI", "Normal Inverse"), IEC_VI("VI", "Very Inverse"),
+              IEC_EI("EI", "Extremely Inverse"), IEC_LI("LI", "Long-Time Inverse"),
+              ANSI_MI("MI", "Moderately Inverse"), ANSI_I("I", "Inverse"),
+              ANSI_VI("VI", "Very Inverse"), ANSI_EI("EI", "Extremely Inverse"),
+              ANSI_SI("SI", "Short-Time Inverse")
+          }
+          private data class CalcResult(val seconds: Double?, val formula: String?, val message: String)
+
+          private fun curveList(s: Standard): List<Curve> = when (s) {
+              Standard.IEC -> listOf(Curve.IEC_NI, Curve.IEC_VI, Curve.IEC_EI, Curve.IEC_LI)
+              Standard.ANSI -> listOf(Curve.ANSI_MI, Curve.ANSI_I, Curve.ANSI_VI, Curve.ANSI_EI, Curve.ANSI_SI)
+              Standard.MANUFACTURER -> emptyList()
+          }
+
+          private fun calculate(s: Standard, c: Curve, pickup: Double, injected: Double, dial: Double): CalcResult {
+              if (pickup <= 0.0 || injected <= 0.0 || dial < 0.0)
+                  return CalcResult(null, null, "Invalid input values.")
+              val m = injected / pickup
+              if (m <= 1.0) return CalcResult(null, null, "Injected current must be greater than Pickup.")
+              val (factor, formula) = when (s) {
+                  Standard.IEC -> when (c) {
+                      Curve.IEC_NI -> (0.14 / (m.pow(0.02) - 1.0)) to "t = TMS × 0.14 / ((I/Is)^0.02 − 1)"
+                      Curve.IEC_VI -> (13.5 / (m - 1.0)) to "t = TMS × 13.5 / ((I/Is) − 1)"
+                      Curve.IEC_EI -> (80.0 / (m.pow(2.0) - 1.0)) to "t = TMS × 80 / ((I/Is)^2 − 1)"
+                      Curve.IEC_LI -> (120.0 / (m - 1.0)) to "t = TMS × 120 / ((I/Is) − 1)"
+                      else -> return CalcResult(null, null, "The selected curve does not belong to IEC.")
+                  }
+                  Standard.ANSI -> when (c) {
+                      Curve.ANSI_MI -> (0.0515 / (m.pow(0.02) - 1.0) + 0.114) to "t = TD × (0.0515 / (M^0.02 − 1) + 0.114)"
+                      Curve.ANSI_VI -> (19.61 / (m.pow(2.0) - 1.0) + 0.491) to "t = TD × (19.61 / (M^2 − 1) + 0.491)"
+                      Curve.ANSI_EI -> (28.2 / (m.pow(2.0) - 1.0) + 0.1217) to "t = TD × (28.2 / (M^2 − 1) + 0.1217)"
+                      else -> return CalcResult(null, null, "An exact IEEE or manufacturer equation must be provided from a technical reference. No estimated result will be shown.")
+                  }
+                  Standard.MANUFACTURER -> return CalcResult(null, null, "Select the manufacturer, relay model, and exact curve specification to calculate.")
+              }
+              val seconds = dial * factor
+              return if (seconds.isFinite() && seconds >= 0.0)
+                  CalcResult(seconds, formula, "")
+              else CalcResult(null, null, "Calculation is not possible with these inputs.")
+          }
+
+          class MainActivity : ComponentActivity() {
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  setContent { RelayCalculator() }
+              }
+          }
+
+          private fun tr(key: String, fa: Boolean): String = if (!fa) key else when (key) {
+              "Protection Curve Calculator" -> "محاسبه‌گر منحنی حفاظتی"
+              "Standard" -> "استاندارد"
+              "IEEE / ANSI" -> "IEEE / ANSI"
+              "Manufacturer Specific Curves" -> "منحنی‌های اختصاصی سازنده"
+              "Manufacturer" -> "سازنده"
+              "For a manufacturer-specific curve, the relay model and curve data must be specified." -> "برای منحنی اختصاصی، مدل رله و اطلاعات منحنی باید مشخص شود."
+              "Curve Type" -> "نوع منحنی"
+              "Normal Inverse" -> "معکوس نرمال"
+              "Very Inverse" -> "معکوس زیاد"
+              "Extremely Inverse" -> "معکوس خیلی زیاد"
+              "Long-Time Inverse" -> "معکوس زمان‌طولانی"
+              "Moderately Inverse" -> "معکوس متوسط"
+              "Inverse" -> "معکوس"
+              "Short-Time Inverse" -> "معکوس زمان‌کوتاه"
+              "Pickup (A)" -> "جریان پیکاپ (آمپر)"
+              "Injected Current (A)" -> "جریان تزریقی (آمپر)"
+              "Time Dial" -> "ضریب زمانی (Time Dial)"
+              "TMS" -> "ضریب زمانی (TMS)"
+              "Show Formula" -> "نمایش فرمول"
+              "Show Curve" -> "نمایش منحنی"
+              "Calculate Operating Time" -> "محاسبه زمان عملکرد"
+              "Relay Operating Time" -> "زمان عملکرد رله"
+              "Calculation Formula" -> "فرمول محاسبه"
+              "Characteristic Curve" -> "منحنی مشخصه"
+              "Offline Test Version" -> "نسخه آزمایشی آفلاین"
+              "Settings" -> "تنظیمات"
+              "Language" -> "زبان"
+              "English" -> "انگلیسی"
+              "فارسی" -> "فارسی"
+              "Software Made By Farzin Nekouiee" -> "نرم‌افزار ساخته‌شده توسط Farzin Nekouiee"
+              "Invalid input values." -> "مقادیر ورودی نامعتبر است."
+              "Injected current must be greater than Pickup." -> "جریان تزریقی باید بیشتر از جریان پیکاپ باشد."
+              "The selected curve does not belong to IEC." -> "منحنی انتخاب‌شده متعلق به استاندارد IEC نیست."
+              "An exact IEEE or manufacturer equation must be provided from a technical reference. No estimated result will be shown." -> "برای این منحنی باید معادله دقیق از مرجع فنی ارائه شود؛ نتیجه تخمینی نمایش داده نمی‌شود."
+              "Select the manufacturer, relay model, and exact curve specification to calculate." -> "برای محاسبه، سازنده، مدل رله و مشخصات دقیق منحنی را انتخاب کنید."
+              "Calculation is not possible with these inputs." -> "با این مقادیر امکان محاسبه وجود ندارد."
+              "A verified equation is required to plot this curve." -> "برای رسم این منحنی، معادله تأییدشده لازم است."
+              "Note: Before using these results for relay testing or settings, verify the curve and coefficients against the relay manual. Some ANSI and manufacturer-specific curves require exact manufacturer data." -> "توجه: پیش از استفاده از نتایج برای تست یا تنظیم رله، منحنی و ضرایب را با دفترچه رله تطبیق دهید. برخی منحنی‌های ANSI و اختصاصی به اطلاعات دقیق سازنده نیاز دارند."
+              else -> key
+          }
+
+          @OptIn(ExperimentalMaterial3Api::class)
+          @Composable
+          private fun RelayCalculator() {
+              var isPersian by remember { mutableStateOf(false) }
+              var settingsOpen by remember { mutableStateOf(false) }
+              var standard by remember { mutableStateOf(Standard.IEC) }
+              var curve by remember { mutableStateOf(Curve.IEC_NI) }
+              var pickup by remember { mutableStateOf("100") }
+              var injection by remember { mutableStateOf("500") }
+              var dial by remember { mutableStateOf("0.1") }
+              var showFormula by remember { mutableStateOf(false) }
+              var showGraph by remember { mutableStateOf(false) }
+              var result by remember { mutableStateOf<CalcResult?>(null) }
+              var standardExpanded by remember { mutableStateOf(false) }
+              var curveExpanded by remember { mutableStateOf(false) }
+              var manufacturer by remember { mutableStateOf("Siemens") }
+              var manufacturerExpanded by remember { mutableStateOf(false) }
+
+              val dark = darkColorScheme(primary = Color(0xFF55B7D8), background = Color(0xFF101820), surface = Color(0xFF1B2833))
+              MaterialTheme(colorScheme = dark) {
+                  CompositionLocalProvider(LocalLayoutDirection provides if (isPersian) LayoutDirection.Rtl else LayoutDirection.Ltr) {
+                  Surface(Modifier.fillMaxSize(), color = Color(0xFF101820)) {
+                      Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                          Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                              Column(Modifier.weight(1f)) {
+                                  Text(tr("Protection Curve Calculator", isPersian), fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                                  Text(tr("Protection Curve Calculator", isPersian), color = Color(0xFF8BA9B8), fontSize = 12.sp)
+                              }
+                              TextButton(onClick = { settingsOpen = true }) { Text("⚙") }
+                          }
+                          HorizontalDivider(color = Color(0xFF344653))
+                          SimpleDropdown(tr("Standard", isPersian), tr(standard.title, isPersian), standardExpanded, { standardExpanded = it }) {
+                              Standard.values().forEach { item -> DropdownMenuItem(text = { Text(tr(item.title, isPersian)) }, onClick = {
+                                  standard = item; curve = curveList(item).firstOrNull() ?: Curve.IEC_NI; result = null; standardExpanded = false
+                              }) }
+                          }
+                          if (standard == Standard.MANUFACTURER) {
+                              SimpleDropdown(tr("Manufacturer", isPersian), manufacturer, manufacturerExpanded, { manufacturerExpanded = it }) {
+                                  listOf("Siemens", "ABB", "Schneider Electric", "GE", "SEL").forEach { item ->
+                                      DropdownMenuItem(text = { Text(item) }, onClick = { manufacturer = item; result = null; manufacturerExpanded = false })
+                                  }
+                              }
+                              Text(tr("For a manufacturer-specific curve, the relay model and curve data must be specified.", isPersian), color = Color(0xFFFFC46B), fontSize = 12.sp)
+                          } else {
+                              SimpleDropdown(tr("Curve Type", isPersian), "${curve.code} — ${tr(curve.title, isPersian)}", curveExpanded, { curveExpanded = it }) {
+                                  curveList(standard).forEach { item -> DropdownMenuItem(text = { Text("${item.code} — ${tr(item.title, isPersian)}") }, onClick = { curve = item; result = null; curveExpanded = false }) }
+                              }
+                          }
+                          NumberInput(tr("Pickup (A)", isPersian), pickup) { pickup = it; result = null }
+                          NumberInput(tr("Injected Current (A)", isPersian), injection) { injection = it; result = null }
+                          NumberInput(if (standard == Standard.ANSI) tr("Time Dial", isPersian) else tr("TMS", isPersian), dial) { dial = it; result = null }
+                          Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(18.dp)) {
+                              Row(Modifier.weight(1f), horizontalArrangement = Arrangement.Start) {
+                                  Checkbox(showFormula, { showFormula = it }); Text(tr("Show Formula", isPersian), Modifier.padding(top = 12.dp))
+                              }
+                              Row(Modifier.weight(1f), horizontalArrangement = Arrangement.Start) {
+                                  Checkbox(showGraph, { showGraph = it }); Text(tr("Show Curve", isPersian), Modifier.padding(top = 12.dp))
+                              }
+                          }
+                          Button(onClick = { result = calculate(standard, curve, pickup.toDoubleOrNull() ?: 0.0, injection.toDoubleOrNull() ?: 0.0, dial.toDoubleOrNull() ?: -1.0) }, modifier = Modifier.fillMaxWidth()) {
+                              Text(tr("Calculate Operating Time", isPersian))
+                          }
+                          result?.let { r ->
+                              Card(colors = CardDefaults.cardColors(containerColor = Color(0xFF1B2833))) {
+                                  Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                      Text(tr("Relay Operating Time", isPersian), color = Color(0xFF8BA9B8))
+                                      if (r.seconds != null) Text(String.format("%.4f s", r.seconds), color = Color(0xFF72D1A5), fontSize = 28.sp, fontWeight = FontWeight.Bold)
+                                      else Text(tr(r.message, isPersian), color = Color(0xFFFFC46B))
+                                      if (showFormula && r.formula != null) {
+                                          HorizontalDivider(color = Color(0xFF344653))
+                                          Text(tr("Calculation Formula", isPersian), fontWeight = FontWeight.Bold)
+                                          Text(r.formula, color = Color(0xFFE7EEF2), fontSize = 13.sp)
+                                      }
+                                  }
+                              }
+                          }
+                          if (showGraph) {
+                              Text(tr("Characteristic Curve", isPersian), color = Color(0xFF55B7D8), fontWeight = FontWeight.Bold)
+                              CurveGraph(standard, curve, dial.toDoubleOrNull() ?: 0.1, isPersian)
+                          }
+                          Text(tr("Note: Before using these results for relay testing or settings, verify the curve and coefficients against the relay manual. Some ANSI and manufacturer-specific curves require exact manufacturer data.", isPersian), color = Color(0xFFFFC46B), fontSize = 11.sp)
+                          Text(tr("Offline Test Version", isPersian), color = Color(0xFF718792), fontSize = 10.sp)
+                      }
+                  }
+                  if (settingsOpen) {
+                      AlertDialog(
+                          onDismissRequest = { settingsOpen = false },
+                          title = { Text(tr("Settings", isPersian)) },
+                          text = {
+                              Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                  Text(tr("Language", isPersian), fontWeight = FontWeight.Bold)
+                                  Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                      OutlinedButton(onClick = { isPersian = false }) { Text("English") }
+                                      OutlinedButton(onClick = { isPersian = true }) { Text("فارسی") }
+                                  }
+                                  Text("Software Made By Farzin Nekouiee", color = Color(0xFF8BA9B8), fontSize = 13.sp)
+                              }
+                          },
+                          confirmButton = { TextButton(onClick = { settingsOpen = false }) { Text(if (isPersian) "بستن" else "Close") } }
+                      )
+                  }
+                  }
+              }
+          }
+
+          @OptIn(ExperimentalMaterial3Api::class)
+          @Composable
+          private fun SimpleDropdown(label: String, value: String, expanded: Boolean, onExpanded: (Boolean) -> Unit, menu: @Composable ColumnScope.() -> Unit) {
+              ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = onExpanded) {
+                  OutlinedTextField(value = value, onValueChange = {}, readOnly = true, label = { Text(label) }, modifier = Modifier.menuAnchor().fillMaxWidth())
+                  ExposedDropdownMenu(expanded = expanded, onDismissRequest = { onExpanded(false) }, content = menu)
+              }
+          }
+
+          @Composable
+          private fun NumberInput(label: String, value: String, onChange: (String) -> Unit) {
+              OutlinedTextField(value = value, onValueChange = onChange, label = { Text(label) }, modifier = Modifier.fillMaxWidth(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), singleLine = true)
+          }
+
+          @Composable
+          private fun CurveGraph(standard: Standard, curve: Curve, dial: Double, isPersian: Boolean) {
+              Canvas(Modifier.fillMaxWidth().height(210.dp).background(Color(0xFF16232D), RoundedCornerShape(10.dp)).padding(10.dp)) {
+                  val l = 12f; val t = 8f; val r = size.width - 8f; val b = size.height - 12f
+                  val w = r - l; val h = b - t
+                  for (n in 0..4) {
+                      val x = l + w * n / 4f; val y = t + h * n / 4f
+                      drawLine(Color(0xFF344653), Offset(x, t), Offset(x, b), 1f)
+                      drawLine(Color(0xFF344653), Offset(l, y), Offset(r, y), 1f)
+                  }
+                  val pts = mutableListOf<Offset>()
+                  for (k in 0..120) {
+                      val m = 1.05 + 48.0 * k / 120.0
+                      val f = when (standard) {
+                          Standard.IEC -> when (curve) {
+                              Curve.IEC_NI -> 0.14 / (m.pow(0.02) - 1.0)
+                              Curve.IEC_VI -> 13.5 / (m - 1.0)
+                              Curve.IEC_EI -> 80.0 / (m.pow(2.0) - 1.0)
+                              Curve.IEC_LI -> 120.0 / (m - 1.0)
+                              else -> Double.NaN
+                          }
+                          Standard.ANSI -> when (curve) {
+                              Curve.ANSI_MI -> 0.0515 / (m.pow(0.02) - 1.0) + 0.114
+                              Curve.ANSI_VI -> 19.61 / (m.pow(2.0) - 1.0) + 0.491
+                              Curve.ANSI_EI -> 28.2 / (m.pow(2.0) - 1.0) + 0.1217
+                              else -> Double.NaN
+                          }
+                          Standard.MANUFACTURER -> Double.NaN
+                      }
+                      val sec = f * dial
+                      if (sec.isFinite() && sec > 0) {
+                          val xx = l + (ln(m / 1.05) / ln(49.05 / 1.05)).toFloat() * w
+                          val yy = b - ((ln(sec.coerceIn(0.001, 10000.0) / 0.001) / ln(10000.0 / 0.001)).toFloat() * h)
+                          pts.add(Offset(xx, yy))
+                      }
+                  }
+                  pts.zipWithNext().forEach { (a, z) -> drawLine(Color(0xFF55B7D8), a, z, 3f) }
+              }
+              if (standard == Standard.MANUFACTURER || (standard == Standard.ANSI && curve !in listOf(Curve.ANSI_MI, Curve.ANSI_VI, Curve.ANSI_EI)))
+                  Text(tr("A verified equation is required to plot this curve.", isPersian), color = Color(0xFFFFC46B), fontSize = 11.sp)
+          }
+          EOF_MAIN
+
+      - name: Generate electrical protection app icons
         run: |
           python3 -m pip install -q pillow
-          cat << 'EOF_B64' | base64 -d | tar -xzf -
-          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
-          a4eZcb5sfe7zsi/nr0C1d6JnodeyXscPfp1z6Q6xhmGg6tVP099t3KchpRrsqYTT5AM+2/aazZzo
-          F2llYnnP1zf1Gp1knrTLdp0gtEcX2vSUJy8M3F7PP/y6rmB94qIN9gcHTj1T1OepvSfhQ6ePgwpI
-          1XsuBedUpQ0Isb06/dgyp6JQi+lfq5Z7W0cPpvEvXds08mJsX9sGuyVfj/zZe7JbN/PBJ3uEb4p9
-          cXW1qeFD52eVBUOmUfMZhbG+Tjr+YSF5zPcrz1/TYfdaVYn2iIsJH1TvZ7V04MeKKyn1e3b2mM51
-          Pzh7Pp18QTSlmP342s7BwZOjQrbvq/1m5rnDkO/O8e7nW1BRHHpAb+XZxya7RXdzrNXfkY0K7Mxo
-          2zMPW9b6Fp89Qqb8sMvdqhWUeZHdsNywVtf5y08V//4RsyM/jR9gXnh73YPKsfm9zZLWBIQbUJbe
-          m/7tMPUK73DXONbt8bNvFx8oWZFz4KXB1aRBn+7vtFm1/6dKl4199+lr8XfHZj1/MD15InXWxdKw
-          QYmjt18x0j9q2dC31mRTp8XLbgytvdh30rj4hHmzlyf2blgWlDVW7cKFDUG5Rh9jng7RN3CIstK5
-          EDY2SbOoz0q6/vn0RQOO7jMoCnnGvzT+pe3RvypRw4veG98bjNKq3ht6fEDtp6mL5zc+f3fmp4rW
-          yeJV2XU+6+L0Z+oKtbt0zjxtncm/Zr1XO2fe+/MLV7FjN+z0y+Qvtwg7FNtv12AO+XZg/ck+ex5d
-          oYbxJ3YvN0y2MjC28ArRWTlxxUl9feJHozfObIeDY+oySF9dC4bP1tpN8D1lo3bk6AXT0GXnL3o8
-          Wtrt3ONvXS4792ef3OJnn2vyOGRCfOydEJHV/DVgNMz5os6hNoyx+GDwh4PlwMArk7QGRA02cktw
-          0aQaLHfh9Id+qJ43Jfn7g5muHQNHCf7s8+fQHaTO2o/vmN4ZOUZ/3ag9BhkBZdaJrsvvD5hud4Cg
-          t+3EsXFGxw16++k/nRa6rvZW0orjuuzrs4ZmuXqKBIe7PO2hF6DpNTDzSbaWd6GxY46+kXrPXo5P
-          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
-          EOF_B64
-          python3 - << 'EOF_PY'
-          import os
-          from PIL import Image, ImageDraw
-          src = Image.open("app_icon.jpg").convert("RGBA")
+          python3 - << 'EOF_ICON'
+          import os, math
+          from PIL import Image, ImageDraw, ImageFilter
+
+          S = 1024
+          bg = Image.new("RGBA", (S, S))
+          px = bg.load()
+          cx, cy = S * 0.5, S * 0.48
+          for y in range(S):
+              for x in range(S):
+                  d = math.hypot(x - cx, y - cy) / (S * 0.65)
+                  t = max(0.0, min(1.0, 1.0 - d))
+                  px[x, y] = (int(2 + 12 * (t ** 1.6)), int(10 + 38 * (t ** 1.5)), int(34 + 78 * (t ** 1.4)), 255)
+          img = bg
+
+          grid = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+          gd = ImageDraw.Draw(grid)
+          for i in range(1, 8):
+              pos = int(S * i / 8)
+              gd.line([(pos, 80), (pos, S - 80)], fill=(40, 140, 200, 32), width=2)
+              gd.line([(80, pos), (S - 80, pos)], fill=(40, 140, 200, 32), width=2)
+          img = Image.alpha_composite(img, grid)
+
+          def shield_pts(scale=1.0):
+              raw = [(512,155),(675,228),(795,248),(786,480),(745,635),(650,765),(512,862),(374,765),(279,635),(238,480),(229,248),(349,228)]
+              return [(512 + (x - 512) * scale, 512 + (y - 512) * scale) for x, y in raw]
+
+          aura = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+          ImageDraw.Draw(aura).polygon(shield_pts(1.03), fill=(30, 160, 230, 55))
+          img = Image.alpha_composite(img, aura.filter(ImageFilter.GaussianBlur(24)))
+
+          sh = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+          sd = ImageDraw.Draw(sh)
+          sd.polygon(shield_pts(1.00), fill=(195, 212, 228, 255))
+          sd.polygon(shield_pts(0.955), fill=(72, 92, 118, 255))
+          sd.polygon(shield_pts(0.91), fill=(218, 232, 245, 255))
+          sd.polygon(shield_pts(0.865), fill=(14, 34, 68, 255))
+          sd.polygon(shield_pts(0.835), fill=(8, 22, 52, 255))
+          img = Image.alpha_composite(img, sh)
+
+          bolt = [(595,205),(415,510),(508,510),(418,818),(628,468),(528,468)]
+          bglow = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+          ImageDraw.Draw(bglow).polygon(bolt, fill=(255, 175, 20, 210))
+          img = Image.alpha_composite(img, bglow.filter(ImageFilter.GaussianBlur(26)))
+
+          bl = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+          bd = ImageDraw.Draw(bl)
+          bd.polygon(bolt, fill=(255, 195, 35, 255))
+          bd.polygon([(578,245),(442,495),(522,495),(452,745),(595,482),(512,482)], fill=(255, 238, 130, 255))
+          img = Image.alpha_composite(img, bl)
+
+          pts = []
+          for k in range(100):
+              u = k / 99.0
+              x = 305 + u * 505
+              m = 1.28 + u * 5.8
+              y = 708 - min(1.0, (1.0 / (m ** 1.25 - 0.72)) / 1.65) * 440
+              pts.append((x, y))
+
+          cglow = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+          ImageDraw.Draw(cglow).line(pts, fill=(0, 235, 255, 220), width=32, joint="curve")
+          img = Image.alpha_composite(img, cglow.filter(ImageFilter.GaussianBlur(18)))
+
+          cl = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+          cd = ImageDraw.Draw(cl)
+          cd.line(pts, fill=(35, 240, 255, 255), width=18, joint="curve")
+          cd.line(pts, fill=(210, 252, 255, 255), width=7, joint="curve")
+          tx, ty = pts[34]
+          cd.ellipse((tx - 16, ty - 16, tx + 16, ty + 16), fill=(255, 255, 255, 255), outline=(0, 230, 255, 255), width=6)
+          img = Image.alpha_composite(img, cl)
+
           for name, size in [("mdpi", 48), ("hdpi", 72), ("xhdpi", 96), ("xxhdpi", 144), ("xxxhdpi", 192)]:
               d = f"app/src/main/res/mipmap-{name}"
               os.makedirs(d, exist_ok=True)
-              sq = src.resize((size, size), Image.Resampling.LANCZOS)
+              sq = img.resize((size, size), Image.Resampling.LANCZOS)
               sq.save(f"{d}/ic_launcher.png", "PNG")
               mask = Image.new("L", (size, size), 0)
               ImageDraw.Draw(mask).ellipse((0, 0, size - 1, size - 1), fill=255)
               rnd = Image.new("RGBA", (size, size), (0, 0, 0, 0))
               rnd.paste(sq, (0, 0), mask)
               rnd.save(f"{d}/ic_launcher_round.png", "PNG")
+
           os.makedirs("app/src/main/res/drawable-xxxhdpi", exist_ok=True)
-          fg = Image.new("RGBA", (432, 432), (0, 6, 38, 255))
-          inner = src.resize((294, 294), Image.Resampling.LANCZOS)
+          fg = Image.new("RGBA", (432, 432), (2, 10, 36, 255))
+          inner = img.resize((294, 294), Image.Resampling.LANCZOS)
           fg.paste(inner, (69, 69), inner)
           fg.save("app/src/main/res/drawable-xxxhdpi/ic_launcher_foreground.png", "PNG")
-          EOF_PY
+          EOF_ICON
 
       - name: Set up Java
         uses: actions/setup-java@v4
